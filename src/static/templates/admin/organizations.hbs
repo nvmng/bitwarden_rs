@@ -1,0 +1,92 @@
+<main class="container-xl">
+    <div id="organizations-block" class="my-3 p-3 bg-white rounded shadow">
+        <h6 class="border-bottom pb-2 mb-3">Organizations</h6>
+
+        <div class="table-responsive-xl small">
+            <table id="orgs-table" class="table table-sm table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Organization</th>
+                        <th>Users</th>
+                        <th>Items</th>
+                        <th>Attachments</th>
+                        <th style="width: 120px; min-width: 120px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{#each organizations}}
+                    <tr>
+                        <td>
+                            <img class="mr-2 float-left rounded identicon" data-src="{{Id}}">
+                            <div class="float-left">
+                                <strong>{{Name}}</strong>
+                                <span class="mr-2">({{BillingEmail}})</span>
+                                <span class="d-block">
+                                    <span class="badge badge-success">{{Id}}</span>
+                                </span>
+                            </div>
+                        </td>
+                        <td>
+                            <span class="d-block">{{user_count}}</span>
+                        </td>
+                        <td>
+                            <span class="d-block">{{cipher_count}}</span>
+                        </td>
+                        <td>
+                            <span class="d-block"><strong>Amount:</strong> {{attachment_count}}</span>
+                            {{#if attachment_count}}
+                            <span class="d-block"><strong>Size:</strong> {{attachment_size}}</span>
+                            {{/if}}
+                        </td>
+                        <td style="font-size: 90%; text-align: right; padding-right: 15px">
+                            <a class="d-block" href="#" onclick='deleteOrganization({{jsesc Id}}, {{jsesc Name}}, {{jsesc BillingEmail}})'>Delete Organization</a>
+                        </td>
+                    </tr>
+                    {{/each}}
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+</main>
+
+<link rel="stylesheet" href="{{urlpath}}/bwrs_static/datatables.css" />
+<script src="{{urlpath}}/bwrs_static/jquery-3.5.1.slim.js"></script>
+<script src="{{urlpath}}/bwrs_static/datatables.js"></script>
+<script>
+    function deleteOrganization(id, name, billing_email) {
+        // First make sure the user wants to delete this organization
+        var continueDelete = confirm("WARNING: All data of this organization ("+ name +") will be lost!\nMake sure you have a backup, this cannot be undone!");
+        if (continueDelete == true) {
+            var input_org_uuid = prompt("To delete the organization '" + name + " (" + billing_email +")', please type the organization uuid below.")
+            if (input_org_uuid != null) {
+                if (input_org_uuid == id) {
+                    _post("{{urlpath}}/admin/organizations/" + id + "/delete",
+                        "Organization deleted correctly",
+                        "Error deleting organization");
+                } else {
+                    alert("Wrong organization uuid, please try again")
+                }
+            }
+        }
+
+        return false;
+    }
+
+    (async () => {
+        for (let e of document.querySelectorAll("img.identicon")) {
+            e.src = await identicon(e.dataset.src);
+        }
+    })();
+
+    document.addEventListener("DOMContentLoaded", function(event) {
+        $('#orgs-table').DataTable({
+            "responsive": true,
+            "lengthMenu": [ [-1, 5, 10, 25, 50], ["All", 5, 10, 25, 50] ],
+            "pageLength": -1, // Default show all
+            "columnDefs": [
+                { "targets": 4, "searchable": false, "orderable": false }
+            ]
+        });
+    });
+</script>

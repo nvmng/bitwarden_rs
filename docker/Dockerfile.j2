@@ -1,0 +1,266 @@
+# This file was generated using a Jinja2 template.
+# Please make your changes in `Dockerfile.j2` and then `make` the individual Dockerfiles.
+
+{% set build_stage_base_image = "rust:1.50" %}
+{% if "alpine" in target_file %}
+{%   if "amd64" in target_file %}
+{%     set build_stage_base_image = "clux/muslrust:nightly-2021-02-22" %}
+{%     set runtime_stage_base_image = "alpine:3.13" %}
+{%     set package_arch_target = "x86_64-unknown-linux-musl" %}
+{%   elif "armv7" in target_file %}
+{%     set build_stage_base_image = "messense/rust-musl-cross:armv7-musleabihf" %}
+{%     set runtime_stage_base_image = "balenalib/armv7hf-alpine:3.13" %}
+{%     set package_arch_target = "armv7-unknown-linux-musleabihf" %}
+{%   endif %}
+{% elif "amd64" in target_file %}
+{%   set runtime_stage_base_image = "debian:buster-slim" %}
+{% elif "arm64" in target_file %}
+{%   set runtime_stage_base_image = "balenalib/aarch64-debian:buster" %}
+{%   set package_arch_name = "arm64" %}
+{%   set package_arch_target = "aarch64-unknown-linux-gnu" %}
+{%   set package_cross_compiler = "aarch64-linux-gnu" %}
+{% elif "armv6" in target_file %}
+{%   set runtime_stage_base_image = "balenalib/rpi-debian:buster" %}
+{%   set package_arch_name = "armel" %}
+{%   set package_arch_target = "arm-unknown-linux-gnueabi" %}
+{%   set package_cross_compiler = "arm-linux-gnueabi" %}
+{% elif "armv7" in target_file %}
+{%   set runtime_stage_base_image = "balenalib/armv7hf-debian:buster" %}
+{%   set package_arch_name = "armhf" %}
+{%   set package_arch_target = "armv7-unknown-linux-gnueabihf" %}
+{%   set package_cross_compiler = "arm-linux-gnueabihf" %}
+{% endif %}
+{% if package_arch_name is defined %}
+{%   set package_arch_prefix = ":" + package_arch_name %}
+{% else %}
+{%   set package_arch_prefix = "" %}
+{% endif %}
+{% if package_arch_target is defined %}
+{%   set package_arch_target_param = " --target=" + package_arch_target %}
+{% else %}
+{%   set package_arch_target_param = "" %}
+{% endif %}
+# Using multistage build:
+# 	https://docs.docker.com/develop/develop-images/multistage-build/
+# 	https://whitfin.io/speeding-up-rust-docker-builds/
+####################### VAULT BUILD IMAGE  #######################
+{% set vault_version = "2.18.2" %}
+{% set vault_image_digest = "sha256:c287301264c7dc86d89aa80487fd7960cc24048390d2bef9ef910dfc77d2c7d5" %}
+# The web-vault digest specifies a particular web-vault build on Docker Hub.
+# Using the digest instead of the tag name provides better security,
+# as the digest of an image is immutable, whereas a tag name can later
+# be changed to point to a malicious image.
+#
+# To verify the current digest for a given tag name:
+# - From https://hub.docker.com/r/bitwardenrs/web-vault/tags,
+#   click the tag name to view the digest of the image it currently points to.
+# - From the command line:
+#     $ docker pull bitwardenrs/web-vault:v{{ vault_version }}
+#     $ docker image inspect --format "{{ '{{' }}.RepoDigests}}" bitwardenrs/web-vault:v{{ vault_version }}
+#     [bitwardenrs/web-vault@{{ vault_image_digest }}]
+#
+# - Conversely, to get the tag name from the digest:
+#     $ docker image inspect --format "{{ '{{' }}.RepoTags}}" bitwardenrs/web-vault@{{ vault_image_digest }}
+#     [bitwardenrs/web-vault:v{{ vault_version }}]
+#
+FROM bitwardenrs/web-vault@{{ vault_image_digest }} as vault
+
+########################## BUILD IMAGE  ##########################
+FROM {{ build_stage_base_image }} as build
+
+{% if "alpine" in target_file %}
+{%   if "amd64" in target_file %}
+# Alpine-based AMD64 (musl) does not support mysql/mariadb during compile time.
+ARG DB=sqlite,postgresql
+{%     set features = "sqlite,postgresql" %}
+{%   else %}
+# Alpine-based ARM (musl) only supports sqlite during compile time.
+ARG DB=sqlite
+{%     set features = "sqlite" %}
+{%   endif %}
+{% else %}
+# Debian-based builds support multidb
+ARG DB=sqlite,mysql,postgresql
+{%   set features = "sqlite,mysql,postgresql" %}
+{% endif %}
+
+# Build time options to avoid dpkg warnings and help with reproducible builds.
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 TZ=UTC TERM=xterm-256color
+
+# Don't download rust docs
+RUN rustup set profile minimal
+
+{% if "alpine" in target_file %}
+ENV USER "root"
+ENV RUSTFLAGS='-C link-arg=-s'
+{% elif "arm" in target_file %}
+# Install required build libs for {{ package_arch_name }} architecture.
+# To compile both mysql and postgresql we need some extra packages for both host arch and target arch
+RUN sed 's/^deb/deb-src/' /etc/apt/sources.list > \
+        /etc/apt/sources.list.d/deb-src.list \
+    && dpkg --add-architecture {{ package_arch_name }} \
+    && apt-get update \
+    && apt-get install -y \
+        --no-install-recommends \
+        libssl-dev{{ package_arch_prefix }} \
+        libc6-dev{{ package_arch_prefix }} \
+        libpq5{{ package_arch_prefix }} \
+        libpq-dev \
+        libmariadb-dev{{ package_arch_prefix }} \
+        libmariadb-dev-compat{{ package_arch_prefix }}
+
+RUN apt-get update \
+    && apt-get install -y \
+        --no-install-recommends \
+        gcc-{{ package_cross_compiler }} \
+    && mkdir -p ~/.cargo \
+    && echo '[target.{{ package_arch_target }}]' >> ~/.cargo/config \
+    && echo 'linker = "{{ package_cross_compiler }}-gcc"' >> ~/.cargo/config \
+    && echo 'rustflags = ["-L/usr/lib/{{ package_cross_compiler }}"]' >> ~/.cargo/config
+
+ENV CARGO_HOME "/root/.cargo"
+ENV USER "root"
+{% endif -%}
+
+{% if "amd64" in target_file and "alpine" not in target_file %}
+# Install DB packages
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    libmariadb-dev{{ package_arch_prefix }} \
+    libpq-dev{{ package_arch_prefix }} \
+    && rm -rf /var/lib/apt/lists/*
+{% endif %}
+
+# Creates a dummy project used to grab dependencies
+RUN USER=root cargo new --bin /app
+WORKDIR /app
+
+# Copies over *only* your manifests and build files
+COPY ./Cargo.* ./
+COPY ./rust-toolchain ./rust-toolchain
+COPY ./build.rs ./build.rs
+
+{% if "alpine" not in target_file %}
+{%   if "arm" in target_file %}
+# NOTE: This should be the last apt-get/dpkg for this stage, since after this it will fail because of broken dependencies.
+# For Diesel-RS migrations_macros to compile with MySQL/MariaDB we need to do some magic.
+# We at least need libmariadb3:amd64 installed for the x86_64 version of libmariadb.so (client)
+# We also need the libmariadb-dev-compat:amd64 but it can not be installed together with the {{ package_arch_prefix }} version.
+# What we can do is a force install, because nothing important is overlapping each other.
+RUN apt-get install -y --no-install-recommends libmariadb3:amd64 && \
+    apt-get download libmariadb-dev-compat:amd64 && \
+    dpkg --force-all -i ./libmariadb-dev-compat*.deb && \
+    rm -rvf ./libmariadb-dev-compat*.deb
+
+# For Diesel-RS migrations_macros to compile with PostgreSQL we need to do some magic.
+# The libpq5{{ package_arch_prefix }} package seems to not provide a symlink to libpq.so.5 with the name libpq.so.
+# This is only provided by the libpq-dev package which can't be installed for both arch at the same time.
+# Without this specific file the ld command will fail and compilation fails with it.
+RUN ln -sfnr /usr/lib/{{ package_cross_compiler }}/libpq.so.5 /usr/lib/{{ package_cross_compiler }}/libpq.so
+
+ENV CC_{{ package_arch_target | replace("-", "_") }}="/usr/bin/{{ package_cross_compiler }}-gcc"
+ENV CROSS_COMPILE="1"
+ENV OPENSSL_INCLUDE_DIR="/usr/include/{{ package_cross_compiler }}"
+ENV OPENSSL_LIB_DIR="/usr/lib/{{ package_cross_compiler }}"
+{%   endif -%}
+{% endif %}
+{% if package_arch_target is defined %}
+RUN rustup target add {{ package_arch_target }}
+{% endif %}
+
+# Builds your dependencies and removes the
+# dummy project, except the target folder
+# This folder contains the compiled dependencies
+RUN cargo build --features ${DB} --release{{ package_arch_target_param }}
+RUN find . -not -path "./target*" -delete
+
+# Copies the complete project
+# To avoid copying unneeded files, use .dockerignore
+COPY . .
+
+# Make sure that we actually build the project
+RUN touch src/main.rs
+
+# Builds again, this time it'll just be
+# your actual source files being built
+RUN cargo build --features ${DB} --release{{ package_arch_target_param }}
+{% if "alpine" in target_file %}
+{%   if "armv7" in target_file %}
+RUN musl-strip target/{{ package_arch_target }}/release/bitwarden_rs
+{%   endif %}
+{% endif %}
+
+######################## RUNTIME IMAGE  ########################
+# Create a new stage with a minimal image
+# because we already have a binary built
+FROM {{ runtime_stage_base_image }}
+
+ENV ROCKET_ENV "staging"
+ENV ROCKET_PORT=80
+ENV ROCKET_WORKERS=10
+{% if "alpine" in runtime_stage_base_image %}
+ENV SSL_CERT_DIR=/etc/ssl/certs
+{% endif %}
+
+{% if "amd64" not in target_file %}
+RUN [ "cross-build-start" ]
+
+{% endif %}
+# Install needed libraries
+{% if "alpine" in runtime_stage_base_image %}
+RUN apk add --no-cache \
+        openssl \
+        curl \
+        dumb-init \
+{%   if "sqlite" in features %}
+        sqlite \
+{%   endif %}
+{%   if "mysql" in features %}
+        mariadb-connector-c \
+{%   endif %}
+{%   if "postgresql" in features %}
+        postgresql-libs \
+{%   endif %}
+        ca-certificates
+{% else %}
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    openssl \
+    ca-certificates \
+    curl \
+    dumb-init \
+    sqlite3 \
+    libmariadb-dev-compat \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+{% endif %}
+
+RUN mkdir /data
+{% if "amd64" not in target_file %}
+
+RUN [ "cross-build-end" ]
+
+{% endif %}
+VOLUME /data
+EXPOSE 80
+EXPOSE 3012
+
+# Copies the files from the context (Rocket.toml file and web-vault)
+# and the binary from the "build" stage to the current stage
+COPY Rocket.toml .
+COPY --from=vault /web-vault ./web-vault
+{% if package_arch_target is defined %}
+COPY --from=build /app/target/{{ package_arch_target }}/release/bitwarden_rs .
+{% else %}
+COPY --from=build /app/target/release/bitwarden_rs .
+{% endif %}
+
+COPY docker/healthcheck.sh /healthcheck.sh
+COPY docker/start.sh /start.sh
+
+HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
+
+# Configures the startup!
+WORKDIR /
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["/start.sh"]

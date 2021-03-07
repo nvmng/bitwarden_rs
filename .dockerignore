@@ -1,0 +1,25 @@
+# Local build artifacts
+target
+
+# Data folder
+data
+.env
+
+# IDE files
+.vscode
+.idea
+*.iml
+
+# Documentation
+.github
+*.md
+*.txt
+*.yml
+*.yaml
+
+# Docker folders
+hooks
+tools
+
+# Web vault
+web-vault
